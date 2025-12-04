@@ -29,8 +29,8 @@ def run_tuning_sweep():
 
     # --- PARAMETERS TO TEST ---
     # Customize these ranges as needed
-    radii_to_test = [1, 2,3,4,5,6]       # Neighbor Radius (Note: 2 is significantly slower)
-    bins_to_test = [5, 10, 20]   # Discretization Bins
+    radii_to_test = [6,7,8]       # Neighbor Radius (Note: 2 is significantly slower)
+    bins_to_test = [5]   # Discretization Bins
     wl_iters_to_test = [2] # WL Kernel Depth
 
     results = []
