@@ -28,7 +28,7 @@ def main():
     gk = get_kernel(KERNEL_TYPE, n_iter=2)
 
     param_grid = {
-        "C": [0.01, 0.01, 1, 10]
+        "C": [0.01, 0.1, 1, 10]
     }
 
     class KWrapper:
@@ -39,7 +39,10 @@ def main():
         def fit(self, X, y):
             gk.wl_iterations = self.wl_iterations
             self.K_train = gk.fit_transform(X)
-            self.model = SVC(kernel="precomputed", C=self.C)
+
+            weights = {'Disordered': 1, 'fcc': 2, 'bcc': 2, 'hcp': 2, 'sc': 2}
+
+            self.model = SVC(kernel="precomputed", C=self.C,class_weight=weights)
             self.model.fit(self.K_train, y)
             return self
 
