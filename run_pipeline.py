@@ -10,6 +10,14 @@ from src.processing import process_graphs
 from src.trainer import train_pipeline
 
 def main():
+    """
+    Entry point for the Crystal Structure Classification pipeline.
+    
+    Steps:
+    1. Loads raw .pkl data from data/raw/
+    2. Runs processing to generate discretized, labeled subgraphs.
+    3. Runs the training pipeline with leakage-proof group splitting.
+    """
     print("========================================")
     print("   CRYSTAL STRUCTURE CLASSIFICATION     ")
     print("========================================")
@@ -24,16 +32,16 @@ def main():
         print(f"ERROR: Could not find file at {RAW_DATA_PATH}")
         return
 
-    # 2. Process Data (Discretize -> Relabel -> Extract Ego Graphs)
+    # 2. Process Data
     print("\n[2/3] Processing graphs...")
-    # This function handles all the heavy lifting defined in src/processing.py
-    subgraphs, labels = process_graphs(data['graphs'], data['metadata'])
+    # Now returns groups as well
+    subgraphs, labels, groups = process_graphs(data['graphs'], data['metadata'])
     print(f"      Generated {len(subgraphs)} labeled subgraphs.")
 
-    # 3. Train Model (WL Kernel + SVM)
+    # 3. Train Model
     print("\n[3/3] Training and Evaluating Model...")
-    # This uses the settings in src/config.py to pick the kernel (WL-OA vs WL)
-    train_pipeline(subgraphs, labels)
+    # Pass groups to trainer to ensure proper splitting
+    train_pipeline(subgraphs, labels, groups)
 
 if __name__ == "__main__":
     main()
