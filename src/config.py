@@ -7,8 +7,8 @@ RAW_DATA_PATH = BASE_DIR / 'data' / 'raw' / 'crystal_graphs_dataset.pkl'
 
 # --- PREPROCESSING ---
 NOISE_THRESHOLD = 0.3     
-NEIGHBOR_RADIUS = 1       
-N_BINS = 20               
+NEIGHBOR_RADIUS = 10       
+N_BINS = 5               
 
 # --- SAMPLING ---
 SAMPLES_PER_GRAPH = 3   
@@ -19,6 +19,6 @@ RANDOM_SEED = 42
 KERNEL_TYPE = 'WL-OA'     
 
 # --- MODEL PARAMETERS ---
-WL_ITERATIONS = 4         # Depth of refinement (h)
+WL_ITERATIONS = 6         # Depth of refinement (h)
 N_JOBS = -1               # Use all cores
-SVM_C = 10.0              # Regularization
+SVM_C = 1.0              # Regularization
