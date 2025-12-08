@@ -1,7 +1,16 @@
 import numpy as np
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import (
+    accuracy_score, 
+    classification_report, 
+    confusion_matrix, 
+    balanced_accuracy_score, 
+    f1_score, 
+    recall_score, 
+    roc_auc_score
+)
+import pandas as pd
 from .kernels import get_kernel
 from .custom_model import CustomKernelSVM
 from .config import KERNEL_TYPE, SVM_C, RANDOM_SEED, WL_ITERATIONS, SVM_IMPLEMENTATION
@@ -32,7 +41,7 @@ def train_pipeline(subgraphs, labels, groups,
         verbose (bool): Whether to print progress logs.
         
     Returns:
-        float: The accuracy score on the test set.
+        dict: A dictionary containing comprehensive metrics (Accuracy, F1, AUC, CM).
     """
     # Resolve actual parameters using overrides, falling back to config defaults
     actual_iter = n_iter if n_iter is not None else WL_ITERATIONS
@@ -70,6 +79,7 @@ def train_pipeline(subgraphs, labels, groups,
     K_test = gk.transform(X_test)
     
     # 2. Select & Train Model
+    clf = None
     if actual_svm == 'custom':
         if verbose: print(f"Fitting CUSTOM SVM (SMO Algorithm, C={SVM_C})...")
         clf = CustomKernelSVM(C=SVM_C)
@@ -80,14 +90,53 @@ def train_pipeline(subgraphs, labels, groups,
         if verbose: print(f"Fitting SKLEARN SVM (C={SVM_C})...")
         # Standard Sklearn with class balancing
         weights = {'Disordered': 1, 'fcc': 5, 'bcc': 5, 'hcp': 5, 'sc': 5}
-        clf = SVC(kernel='precomputed', C=SVM_C, class_weight=weights)
+        clf = SVC(kernel='precomputed', C=SVM_C, class_weight=weights, decision_function_shape='ovr')
         clf.fit(K_train, y_train)
         y_pred = clf.predict(K_test)
     
+    # 3. Calculate Comprehensive Metrics
     acc = accuracy_score(y_test, y_pred)
+    bal_acc = balanced_accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+    sensitivity = recall_score(y_test, y_pred, average='macro', zero_division=0) # Macro average of recall per class
     
+    # Try AUC (Requires probability scores or decision function)
+    auc = "N/A"
+    try:
+        if hasattr(clf, "decision_function"):
+            y_scores = clf.decision_function(K_test)
+            # Handle multi-class AUC
+            if len(np.unique(y_train)) > 2:
+                # Need to check if Scikit-Learn SVM is used; custom models don't expose decision_function easily.
+                auc = roc_auc_score(y_test, y_scores, multi_class='ovr', average='weighted')
+            else:
+                auc = roc_auc_score(y_test, y_scores)
+    except Exception as e:
+        if verbose: 
+            # Note: Custom models need manual score handling for AUC
+            pass 
+
+    # 4. Generate Confusion Matrix
+    cm = confusion_matrix(y_test, y_pred, labels=np.unique(y_train))
+    cm_df = pd.DataFrame(cm, index=np.unique(y_train), columns=np.unique(y_train))
+
     if verbose:
-        print(f"Accuracy: {acc:.4f}")
+        print("\n--- PERFORMANCE METRICS ---")
+        print(f"Accuracy:          {acc:.4f}")
+        print(f"Balanced Accuracy: {bal_acc:.4f}")
+        print(f"F1 Score (W):      {f1:.4f}")
+        print(f"Sensitivity (Mac): {sensitivity:.4f}")
+        print(f"AUC:               {auc}")
+        print("\n--- CONFUSION MATRIX ---")
+        print(cm_df)
+        print("\nDetailed Report:")
         print(classification_report(y_test, y_pred, zero_division=0))
         
-    return acc
+    return {
+        'Accuracy': acc,
+        'Balanced Accuracy': bal_acc,
+        'F1 Score': f1,
+        'Sensitivity': sensitivity,
+        'AUC': auc,
+        'Confusion Matrix': cm_df
+    }
