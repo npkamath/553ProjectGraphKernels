@@ -58,7 +58,7 @@ def train_pipeline(subgraphs, labels, groups, n_iter=None, verbose=True):
     if verbose: print(f"Fitting SVM Classifier (C={SVM_C})...")
     # Custom class weights to penalize missing a Crystal more than missing Disordered
     # (Adjust keys 'sc', 'fcc' etc. to match your exact label strings)
-    weights = {'Disordered': 1, 'fcc': 2, 'bcc': 2, 'hcp': 2, 'sc': 2}
+    weights = {'Disordered': 1, 'fcc': 1, 'bcc': 1, 'hcp': 1, 'sc': 1}
     clf = SVC(kernel='precomputed', C=SVM_C, class_weight=weights)
     clf.fit(K_train, y_train)
     

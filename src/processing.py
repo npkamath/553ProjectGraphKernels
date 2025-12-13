@@ -24,7 +24,7 @@ def get_node_feature_vector(node_attributes):
         features.append(node_attributes.get(key, 0.0))
     return np.array(features)
 
-def process_graphs(graphs, metadata, n_bins=N_BINS, radius=NEIGHBOR_RADIUS):
+def process_graphs(graphs, metadata, n_bins=N_BINS, radius=NEIGHBOR_RADIUS, noise_threshold=NOISE_THRESHOLD):
     """
     The main data processing pipeline. Converts raw simulation graphs into 
     labeled subgraphs ready for kernel classification.
@@ -74,7 +74,7 @@ def process_graphs(graphs, metadata, n_bins=N_BINS, radius=NEIGHBOR_RADIUS):
     
     for graph_idx, (G, meta) in enumerate(zip(graphs, metadata)):
         # Apply physics-based filtering logic
-        if meta['noise_level'] > NOISE_THRESHOLD:
+        if meta['noise_level'] > noise_threshold:
             label = 'Disordered'
         else:
             label = meta['crystal_type']

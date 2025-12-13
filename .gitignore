@@ -205,4 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-data/raw/crystal_graphs_dataset.pkl
+data/
+models/
+results/
+*.png
+*.csv
