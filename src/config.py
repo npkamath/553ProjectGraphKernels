@@ -3,7 +3,7 @@ from pathlib import Path
 
 # --- PATHS ---
 BASE_DIR = Path(__file__).resolve().parent.parent
-RAW_DATA_PATH = BASE_DIR / 'data' / 'raw' / 'crystal_graphs_dataset.pkl'
+RAW_DATA_PATH = BASE_DIR / 'data' / 'raw' / 'crystal_graphs_dataset_smaller.pkl'
 
 # --- PREPROCESSING ---
 NOISE_THRESHOLD = 0.2     

@@ -2,6 +2,10 @@ import pickle
 import sys
 from pathlib import Path
 
+import numpy as np
+np.float_ = np.float64
+np.int_ = np.int64
+
 # Ensure src is in the python path
 sys.path.append(str(Path(__file__).parent))
 

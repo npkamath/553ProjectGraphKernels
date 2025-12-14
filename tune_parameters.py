@@ -4,6 +4,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 
+import numpy as np
+np.float_ = np.float64
+np.int_ = np.int64
+
 # Ensure we can import from src/
 sys.path.append(str(Path(__file__).parent))
 
@@ -32,20 +36,22 @@ def run_tuning_sweep():
     radii_to_test = [6,7,8]       # Neighbor Radius (Note: 2 is significantly slower)
     bins_to_test = [5]   # Discretization Bins
     wl_iters_to_test = [2] # WL Kernel Depth
+    noise_val_to_test = [0.05, 0.1, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2, 0.22]
 
     results = []
 
     # 2. Outer Loop: Structure Parameters (Requires re-processing graphs)
     for radius in radii_to_test:
-        for n_bins in bins_to_test:
-            print(f"\n[Processing] Radius={radius}, Bins={n_bins}...")
-            
+        for noise_val in noise_val_to_test:
+            print(f"\n[Processing] Radius={radius}, noise_threshold={noise_val}...")
+            n_bins = 2
             # This is the slow step: extracting new subgraphs
             subgraphs, labels, groups = process_graphs(
                 graphs, 
                 metadata, 
                 n_bins=n_bins, 
-                radius=radius
+                radius=radius,
+                noise_threshold=noise_val
             )
             
             # 3. Inner Loop: Kernel Parameters (Fast, just re-training SVM)
@@ -66,6 +72,7 @@ def run_tuning_sweep():
                 results.append({
                     'Neighbor Radius': radius,
                     'Bins': n_bins,
+                    'noise_threshold': noise_val,
                     'WL Iterations': wl_iter,
                     'Accuracy': acc
                 })
@@ -90,21 +97,21 @@ def plot_results(df):
     Generates a performance plot comparing different radii and bins.
     """
     radii = df['Neighbor Radius'].unique()
-    bins = df['Bins'].unique()
+    noise_threshold = df['noise_threshold'].unique()
     
     plt.figure(figsize=(12, 6))
     
     # Create a line for every combination of Radius + Bins
     for r in radii:
-        for b in bins:
-            subset = df[(df['Neighbor Radius'] == r) & (df['Bins'] == b)]
+        for n in noise_threshold:
+            subset = df[(df['Neighbor Radius'] == r) & (df['noise_threshold'] == n)]
             subset = subset.sort_values(by='WL Iterations')
             
-            label = f"Radius {r}, Bins {b}"
-            plt.plot(subset['WL Iterations'], subset['Accuracy'], marker='o', label=label)
+            label = f"Radius {r}"
+            plt.plot(subset['noise_threshold'], subset['Accuracy'], marker='o', label=label)
     
     plt.title("Parameter Tuning Results")
-    plt.xlabel("WL Iterations (Depth)")
+    plt.xlabel("noise_threshold")
     plt.ylabel("Accuracy")
     plt.ylim(0, 1.05)
     plt.grid(True, linestyle='--', alpha=0.7)
