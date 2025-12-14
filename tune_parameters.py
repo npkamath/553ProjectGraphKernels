@@ -1,15 +1,26 @@
 import sys
 import pickle
 import matplotlib.pyplot as plt
+import seaborn as sns
 import pandas as pd
+import numpy as np
 from pathlib import Path
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.metrics import (
+    accuracy_score, 
+    confusion_matrix, 
+    balanced_accuracy_score, 
+    f1_score, 
+    recall_score
+)
+from sklearn.svm import SVC
 
 # Ensure we can import from src/
 sys.path.append(str(Path(__file__).parent))
 
-from src.config import RAW_DATA_PATH
-from src.processing import process_graphs
-from src.trainer import train_pipeline
+from src.config import RAW_DATA_PATH, RANDOM_SEED, SVM_C, N_JOBS
+from src.processing import extract_raw_samples, to_grakel
+from src.kernels import get_kernel
 
 def run_tuning_sweep():
     print("========================================")
@@ -28,92 +39,152 @@ def run_tuning_sweep():
         return
 
     # --- PARAMETERS TO TEST ---
-    # Customize these ranges as needed
-    radii_to_test = [6,7,8]       # Neighbor Radius (Note: 2 is significantly slower)
-    bins_to_test = [5]   # Discretization Bins
-    wl_iters_to_test = [2] # WL Kernel Depth
+    radii_to_test = [1,2,3,4, 5, 6, 7]      
+    bins_to_test = [2, 3, 4, 5]       
+    wl_iters_to_test = [1, 2, 3, 4,5]   
 
     results = []
+    
+    # Track the best model for final visualization
+    best_score = -1.0
+    best_cm = None
+    best_params = {}
 
-    # 2. Outer Loop: Structure Parameters (Requires re-processing graphs)
+    # 2. Outer Loop: Structure Parameters (Radius)
+    # This is the most expensive loop (Graph Extraction), so we do it first/least often.
     for radius in radii_to_test:
+        print(f"\n\n=== [Structure Group] Radius={radius} ===")
+        
+        # Extract raw physics samples (geometry)
+        raw_samples_all = extract_raw_samples(graphs, metadata, radius=radius)
+        
+        # 3. Middle Loop: Discretization (Bins)
         for n_bins in bins_to_test:
-            print(f"\n[Processing] Radius={radius}, Bins={n_bins}...")
+            print(f"   > Processing Bins={n_bins}...")
             
-            # This is the slow step: extracting new subgraphs
-            subgraphs, labels, groups = process_graphs(
-                graphs, 
-                metadata, 
-                n_bins=n_bins, 
-                radius=radius
-            )
+            # --- STRATIFIED GROUP SPLIT ---
+            # We must split raw samples to ensure Discretizer is fit ONLY on Train
+            groups_all = [s['group'] for s in raw_samples_all]
+            dummy_y = [s['label'] for s in raw_samples_all]
             
-            # 3. Inner Loop: Kernel Parameters (Fast, just re-training SVM)
+            # Use StratifiedGroupKFold (n_splits=5 means 20% test set)
+            sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
+            train_idx, test_idx = next(sgkf.split(raw_samples_all, dummy_y, groups_all))
+            
+            raw_train = [raw_samples_all[i] for i in train_idx]
+            raw_test = [raw_samples_all[i] for i in test_idx]
+            
+            # Fit Discretizer on Train, Transform Test
+            X_train, y_train_list, _, fitted_disc = to_grakel(raw_train, discretizer=None, n_bins=n_bins)
+            X_test, y_test_list, _, _ = to_grakel(raw_test, discretizer=fitted_disc)
+            
+            y_train = np.array(y_train_list)
+            y_test = np.array(y_test_list)
+
+            # 4. Inner Loop: Kernel Parameters
             for wl_iter in wl_iters_to_test:
-                print(f"   > Training WL_Iter={wl_iter}...", end="")
+                print(f"     >>> WL_Iter={wl_iter}...", end=" ")
                 
-                # Run training silently (verbose=False) to keep output clean
-                acc = train_pipeline(
-                    subgraphs, 
-                    labels, 
-                    groups, 
-                    n_iter=wl_iter, 
-                    verbose=False
-                )
+                # Compute Kernel
+                # Note: N_JOBS=-1 ensures GraKeL uses all cores for the matrix calculation
+                gk = get_kernel('WL-OA', n_iter=wl_iter) 
                 
-                print(f" Accuracy: {acc:.4f}")
+                # IMPORTANT: GraKeL parallelization happens here
+                K_train = gk.fit_transform(X_train)
+                K_test = gk.transform(X_test)
                 
+                # Train SVM 
+                clf = SVC(kernel='precomputed', C=SVM_C, class_weight='balanced')
+                clf.fit(K_train, y_train)
+                y_pred = clf.predict(K_test)
+                
+                # Metrics
+                known_classes = np.unique(y_train)
+                acc = accuracy_score(y_test, y_pred)
+                bal_acc = balanced_accuracy_score(y_test, y_pred)
+                # Pass labels=known_classes to prevent warnings if Test set misses a rare class
+                f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0, labels=known_classes)
+                sens = recall_score(y_test, y_pred, average='macro', zero_division=0, labels=known_classes)
+                
+                # UPDATED PRINT STATEMENT
+                print(f"-> Acc: {acc:.4f} | Bal Acc: {bal_acc:.4f} | F1: {f1:.4f} | Sens: {sens:.4f}")
+
+                # Store results
                 results.append({
                     'Neighbor Radius': radius,
                     'Bins': n_bins,
                     'WL Iterations': wl_iter,
-                    'Accuracy': acc
+                    'Accuracy': acc,
+                    'Balanced Accuracy': bal_acc,
+                    'F1 Score': f1,
+                    'Sensitivity': sens
                 })
+                
+                # Check for best model
+                if bal_acc > best_score:
+                    best_score = bal_acc
+                    cm = confusion_matrix(y_test, y_pred, labels=known_classes)
+                    best_cm = pd.DataFrame(cm, index=known_classes, columns=known_classes)
+                    best_params = {'Radius': radius, 'Bins': n_bins, 'WL': wl_iter}
 
-    # 4. Display & Save Results
+    # 5. Display & Save Results
     df = pd.DataFrame(results)
     
     print("\n========================================")
-    print("           TOP 5 CONFIGURATIONS         ")
+    print(f"   BEST CONFIGURATION (Bal Acc: {best_score:.4f})")
+    print(f"   {best_params}")
     print("========================================")
-    print(df.sort_values(by='Accuracy', ascending=False).head(5))
     
-    # Save CSV for record
     df.to_csv('tuning_results.csv', index=False)
-    print("\nFull results saved to 'tuning_results.csv'")
+    print("Results saved to 'tuning_results.csv'")
 
-    # 5. Visualization
-    plot_results(df)
+    plot_results(df, best_cm, best_params)
 
-def plot_results(df):
+def plot_results(df, best_cm, best_params):
     """
-    Generates a performance plot comparing different radii and bins.
+    Plots tuning curves for Radius, Bins, and WL Iterations, 
+    plus the confusion matrix of the best model.
     """
-    radii = df['Neighbor Radius'].unique()
-    bins = df['Bins'].unique()
+    Path('figures').mkdir(exist_ok=True)
     
-    plt.figure(figsize=(12, 6))
+    # Setup the figure for 3 side-by-side tuning plots
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
-    # Create a line for every combination of Radius + Bins
-    for r in radii:
-        for b in bins:
-            subset = df[(df['Neighbor Radius'] == r) & (df['Bins'] == b)]
-            subset = subset.sort_values(by='WL Iterations')
-            
-            label = f"Radius {r}, Bins {b}"
-            plt.plot(subset['WL Iterations'], subset['Accuracy'], marker='o', label=label)
-    
-    plt.title("Parameter Tuning Results")
-    plt.xlabel("WL Iterations (Depth)")
-    plt.ylabel("Accuracy")
-    plt.ylim(0, 1.05)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    # Plot 1: Impact of Neighbor Radius
+    sns.lineplot(data=df, x='Neighbor Radius', y='Balanced Accuracy', marker='o', ax=axes[0], color='navy')
+    axes[0].set_title("Impact of Neighbor Radius")
+    axes[0].set_ylabel("Balanced Accuracy")
+    axes[0].grid(True, linestyle='--', alpha=0.6)
+
+    # Plot 2: Impact of Number of Bins
+    sns.lineplot(data=df, x='Bins', y='Balanced Accuracy', marker='s', ax=axes[1], color='darkgreen')
+    axes[1].set_title("Impact of Discretization Bins")
+    axes[1].set_ylabel("Balanced Accuracy")
+    axes[1].xaxis.get_major_locator().set_params(integer=True) # Ensure integer ticks
+    axes[1].grid(True, linestyle='--', alpha=0.6)
+
+    # Plot 3: Impact of WL Iterations
+    sns.lineplot(data=df, x='WL Iterations', y='Balanced Accuracy', marker='^', ax=axes[2], color='darkred')
+    axes[2].set_title("Impact of WL Kernel Depth")
+    axes[2].set_ylabel("Balanced Accuracy")
+    axes[2].xaxis.get_major_locator().set_params(integer=True) # Ensure integer ticks
+    axes[2].grid(True, linestyle='--', alpha=0.6)
+
     plt.tight_layout()
+    plt.savefig('figures/fig_parameter_tuning_3panel.png', dpi=300)
+    print("Tuning panel saved to 'figures/fig_parameter_tuning_3panel.png'")
     
-    # Save plot
-    plt.savefig('tuning_plot.png')
-    print("Performance plot saved to 'tuning_plot.png'")
+    # --- Plot 4: Best Confusion Matrix ---
+    if best_cm is not None:
+        plt.figure(figsize=(7, 6))
+        sns.heatmap(best_cm, annot=True, fmt='d', cmap='Blues', cbar=False)
+        plt.title(f"Best Model CM\n(R={best_params['Radius']}, B={best_params['Bins']}, WL={best_params['WL']})")
+        plt.xlabel('Predicted Label')
+        plt.ylabel('True Label')
+        plt.tight_layout()
+        plt.savefig('figures/fig_best_confusion_matrix.png', dpi=300)
+        print("Confusion Matrix saved to 'figures/fig_best_confusion_matrix.png'")
+    
     plt.show()
 
 if __name__ == "__main__":

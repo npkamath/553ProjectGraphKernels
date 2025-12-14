@@ -14,36 +14,17 @@ import pandas as pd
 from .kernels import get_kernel
 from .custom_model import CustomKernelSVM
 from .config import KERNEL_TYPE, SVM_C, RANDOM_SEED, WL_ITERATIONS, SVM_IMPLEMENTATION
+from .processing import extract_raw_samples, to_grakel
 
-def train_pipeline(subgraphs, labels, groups, 
+def train_pipeline(graphs, metadata, 
                    n_iter=None, 
                    kernel_type=None, 
                    svm_impl=None, 
                    verbose=True):
     """
-    Executes the training and evaluation pipeline.
-    
-    This function handles:
-    1. Splitting data into Train/Test while ensuring NO DATA LEAKAGE (Group Split).
-    2. Computing the Kernel Matrix (Gram Matrix) using either GraKeL or Custom Logic.
-    3. Training an SVM classifier (Standard Sklearn or Custom SMO) based on config.
-    4. Evaluating accuracy and precision/recall.
-    
-    Args:
-        subgraphs (list): List of grakel.Graph objects (the inputs).
-        labels (list): List of target strings (e.g., 'fcc', 'bcc').
-        groups (list): List of parent simulation IDs. 
-                       CRITICAL: This ensures that subgraphs from the same 
-                       simulation file are kept together (all in train OR all in test).
-        n_iter (int): Optional override for WL kernel iterations (depth).
-        kernel_type (str): Override for KERNEL_TYPE (e.g., 'WL-OA', 'CUSTOM-WL-OA').
-        svm_impl (str): Override for SVM_IMPLEMENTATION ('sklearn', 'custom').
-        verbose (bool): Whether to print progress logs.
-        
-    Returns:
-        dict: A dictionary containing comprehensive metrics (Accuracy, F1, AUC, CM).
+    Executes the training and evaluation pipeline with Strict Leakage Prevention.
     """
-    # Resolve actual parameters using overrides, falling back to config defaults
+    # Resolve actual parameters using overrides
     actual_iter = n_iter if n_iter is not None else WL_ITERATIONS
     actual_kernel = kernel_type if kernel_type is not None else KERNEL_TYPE
     actual_svm = svm_impl if svm_impl is not None else SVM_IMPLEMENTATION
@@ -51,34 +32,54 @@ def train_pipeline(subgraphs, labels, groups,
     if verbose: 
         print(f"Training with Kernel={actual_kernel}, SVM={actual_svm}, Iterations={actual_iter}")
     
-    # Convert lists to numpy arrays for advanced indexing
-    subgraphs_arr = np.array(subgraphs, dtype=object)
-    labels_arr = np.array(labels)
-    groups_arr = np.array(groups)
-
-    # --- STRATIFIED GROUP SPLIT ---
-    # StratifiedGroupKFold ensures no leakage + balanced classes across splits
-    sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
-    train_idx, test_idx = next(sgkf.split(subgraphs_arr, labels_arr, groups_arr))
+    # --- 1. STRATIFIED GROUP SPLIT ON RAW SIMULATIONS ---
+    n_sims = len(graphs)
+    dummy_y = [m['crystal_type'] for m in metadata]
+    groups = np.arange(n_sims) # Each simulation is its own group
     
-    X_train = subgraphs_arr[train_idx]
-    X_test = subgraphs_arr[test_idx]
-    y_train = labels_arr[train_idx]
-    y_test = labels_arr[test_idx]
+    # FIX: Use StratifiedGroupKFold to ensure classes are balanced
+    # n_splits=5 gives us a 20% test set (1/5)
+    sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
+    train_idx, test_idx = next(sgkf.split(graphs, dummy_y, groups))
+    
+    if verbose: 
+        print(f"Split: {len(train_idx)} Train Sims vs {len(test_idx)} Test Sims")
+
+    # Helper to subset lists
+    train_graphs = [graphs[i] for i in train_idx]
+    train_meta = [metadata[i] for i in train_idx]
+    test_graphs = [graphs[i] for i in test_idx]
+    test_meta = [metadata[i] for i in test_idx]
+
+    # --- 2. EXTRACT RAW SAMPLES ---
+    if verbose: print("Extracting raw samples (Ego Graphs + Raw Features)...")
+    raw_train = extract_raw_samples(train_graphs, train_meta)
+    raw_test = extract_raw_samples(test_graphs, test_meta)
+
+    # --- 3. DISCRETIZE (PREVENT LEAKAGE) ---
+    if verbose: print("Discretizing features...")
+    
+    # A. FIT on Train
+    X_train, y_train_list, _, fitted_disc = to_grakel(raw_train, discretizer=None)
+    
+    # B. TRANSFORM Test (using fitted discretizer)
+    X_test, y_test_list, _, _ = to_grakel(raw_test, discretizer=fitted_disc)
+    
+    # Convert labels to numpy for metric calculation
+    y_train = np.array(y_train_list)
+    y_test = np.array(y_test_list)
 
     if verbose:
-        n_train = len(np.unique(groups_arr[train_idx]))
-        n_test = len(np.unique(groups_arr[test_idx]))
-        print(f"Train: {len(X_train)} samples ({n_train} sims) | Test: {len(X_test)} samples ({n_test} sims)")
+        print(f"Processed Samples -> Train: {len(X_train)} | Test: {len(X_test)}")
 
-    # 1. Compute Kernels
+    # --- 4. COMPUTE KERNELS ---
     gk = get_kernel(actual_kernel, n_iter=actual_iter)
     
     if verbose: print("Computing Kernel Matrix...")
     K_train = gk.fit_transform(X_train)
     K_test = gk.transform(X_test)
     
-    # 2. Select & Train Model
+    # --- 5. MODEL TRAINING ---
     clf = None
     if actual_svm == 'custom':
         if verbose: print(f"Fitting CUSTOM SVM (SMO Algorithm, C={SVM_C})...")
@@ -87,38 +88,35 @@ def train_pipeline(subgraphs, labels, groups,
         y_pred = clf.predict(K_test)
         
     else:
-        if verbose: print(f"Fitting SKLEARN SVM (C={SVM_C})...")
-        # Standard Sklearn with class balancing
-        weights = {'Disordered': 1, 'fcc': 5, 'bcc': 5, 'hcp': 5, 'sc': 5}
-        clf = SVC(kernel='precomputed', C=SVM_C, class_weight=weights, decision_function_shape='ovr')
+        if verbose: print(f"Fitting SKLEARN SVM (C={SVM_C}, Weights='balanced')...")
+        clf = SVC(kernel='precomputed', C=SVM_C, class_weight='balanced', decision_function_shape='ovo')
         clf.fit(K_train, y_train)
         y_pred = clf.predict(K_test)
     
-    # 3. Calculate Comprehensive Metrics
+    # --- 6. CALCULATE METRICS ---
+    # Define known classes to prevent warnings if Test set is missing a rare class
+    known_classes = np.unique(y_train)
+
     acc = accuracy_score(y_test, y_pred)
     bal_acc = balanced_accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-    sensitivity = recall_score(y_test, y_pred, average='macro', zero_division=0) # Macro average of recall per class
+    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0, labels=known_classes)
+    sensitivity = recall_score(y_test, y_pred, average='macro', zero_division=0, labels=known_classes)
     
-    # Try AUC (Requires probability scores or decision function)
+    # Try AUC
     auc = "N/A"
     try:
         if hasattr(clf, "decision_function"):
             y_scores = clf.decision_function(K_test)
-            # Handle multi-class AUC
             if len(np.unique(y_train)) > 2:
-                # Need to check if Scikit-Learn SVM is used; custom models don't expose decision_function easily.
                 auc = roc_auc_score(y_test, y_scores, multi_class='ovr', average='weighted')
             else:
                 auc = roc_auc_score(y_test, y_scores)
-    except Exception as e:
-        if verbose: 
-            # Note: Custom models need manual score handling for AUC
-            pass 
+    except Exception:
+        pass 
 
-    # 4. Generate Confusion Matrix
-    cm = confusion_matrix(y_test, y_pred, labels=np.unique(y_train))
-    cm_df = pd.DataFrame(cm, index=np.unique(y_train), columns=np.unique(y_train))
+    # Generate Confusion Matrix
+    cm = confusion_matrix(y_test, y_pred, labels=known_classes)
+    cm_df = pd.DataFrame(cm, index=known_classes, columns=known_classes)
 
     if verbose:
         print("\n--- PERFORMANCE METRICS ---")
@@ -130,7 +128,7 @@ def train_pipeline(subgraphs, labels, groups,
         print("\n--- CONFUSION MATRIX ---")
         print(cm_df)
         print("\nDetailed Report:")
-        print(classification_report(y_test, y_pred, zero_division=0))
+        print(classification_report(y_test, y_pred, zero_division=0, labels=known_classes))
         
     return {
         'Accuracy': acc,

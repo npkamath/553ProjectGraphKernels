@@ -5,7 +5,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 RAW_DATA_PATH = BASE_DIR / 'data' / 'raw' / 'crystal_graphs_dataset.pkl'
 
 # --- PREPROCESSING ---
-NOISE_THRESHOLD = 0.3     
+NOISE_THRESHOLD = 0.2     
 NEIGHBOR_RADIUS = 6     
 N_BINS = 2              
 
@@ -19,15 +19,15 @@ RANDOM_SEED = 42
 # 'WL'           -> GraKeL Subtree (Fastest, Library)
 # 'CUSTOM-WL-OA' -> Your Hand-coded OA Kernel (Slower, High Effort)
 # 'CUSTOM-WL'    -> Your Hand-coded Subtree Kernel (Medium, High Effort)
-KERNEL_TYPE = 'CUSTOM-WL-OA'     
+KERNEL_TYPE = 'WL-OA'     
 
 # --- MODEL SELECTION ---
 # Options: 
 # 'sklearn' -> Standard Library (One-vs-One strategy)
 # 'custom'  -> Your Hand-coded SMO (One-vs-Rest strategy)
-SVM_IMPLEMENTATION = 'custom'
+SVM_IMPLEMENTATION = 'sklearn'
 
 # --- MODEL PARAMETERS ---
-WL_ITERATIONS = 4         
+WL_ITERATIONS = 2         
 N_JOBS = -1               
-SVM_C = 1
+SVM_C = 10

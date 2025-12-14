@@ -1,53 +1,71 @@
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
 from sklearn.svm import SVC
-from sklearn.model_selection import GroupShuffleSplit
 import pickle
 import numpy as np
-from processing import process_graphs
-from kernels import get_kernel
-from config import RAW_DATA_PATH, RANDOM_SEED, KERNEL_TYPE
+import sys
+from pathlib import Path
+
+# Ensure src is in path
+sys.path.append(str(Path(__file__).parent))
+
+from src.processing import extract_raw_samples, to_grakel
+from src.kernels import get_kernel
+from src.config import RAW_DATA_PATH, RANDOM_SEED, KERNEL_TYPE
 
 def main():
     with open(RAW_DATA_PATH, "rb") as f:
         data = pickle.load(f)
 
-    subgraphs, labels, groups = process_graphs(data["graphs"], data["metadata"])
-
-    subgraphs_arr = np.array(subgraphs, dtype=object)
-    labels_arr = np.array(labels)
-    groups_arr = np.array(groups)
-
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=RANDOM_SEED)
-    train_idx, test_idx = next(gss.split(subgraphs_arr, labels_arr, groups_arr))
+    # 1. Split RAW data first (Train/Test)
+    # We use optimal radius/bins here as defaults for the 'inner' SVM tuning
+    RADIUS = 6
+    BINS = 2
     
-    X_train = subgraphs_arr[train_idx]
-    X_test = subgraphs_arr[test_idx]
-    y_train = labels_arr[train_idx]
-    y_test = labels_arr[test_idx]
+    print("Extracting raw samples...")
+    raw_samples_all = extract_raw_samples(data["graphs"], data["metadata"], radius=RADIUS)
+    
+    groups_all = np.array([s['group'] for s in raw_samples_all])
+    dummy_y = np.array([s['label'] for s in raw_samples_all])
+    
+    # Outer Split
+    # FIX: Use StratifiedGroupKFold instead of GroupShuffleSplit
+    # n_splits=5 gives us an 80/20 split
+    sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
+    train_idx, test_idx = next(sgkf.split(raw_samples_all, dummy_y, groups_all))
+    
+    raw_train = [raw_samples_all[i] for i in train_idx]
+    
+    # 2. Process Training Data Only (Fit Discretizer)
+    print("Discretizing training set...")
+    X_train, y_train_list, groups_train, _ = to_grakel(raw_train, discretizer=None, n_bins=BINS)
+    
+    X_train = np.array(X_train, dtype=object)
+    y_train = np.array(y_train_list)
+    groups_train = np.array(groups_train)
 
-    gk = get_kernel(KERNEL_TYPE, n_iter=2)
-
-    param_grid = {
-        "C": [0.01, 0.1, 1, 10]
-    }
-
+    # 3. Define Grid Search Wrapper
+    # This wrapper computes the kernel matrix on the fly for the CV folds
     class KWrapper:
         def __init__(self, C=1.0, wl_iterations=2):
             self.C = C
             self.wl_iterations = wl_iterations
+            self.model = None
+            self.K_train = None
+            self.gk = None
 
         def fit(self, X, y):
-            gk.wl_iterations = self.wl_iterations
-            self.K_train = gk.fit_transform(X)
+            # Re-initialize kernel with current param
+            self.gk = get_kernel(KERNEL_TYPE, n_iter=self.wl_iterations)
+            self.K_train = self.gk.fit_transform(X)
 
+            # Use balanced weighting for tuning
             weights = {'Disordered': 1, 'fcc': 2, 'bcc': 2, 'hcp': 2, 'sc': 2}
-
-            self.model = SVC(kernel="precomputed", C=self.C,class_weight=weights)
+            self.model = SVC(kernel="precomputed", C=self.C, class_weight=weights)
             self.model.fit(self.K_train, y)
             return self
 
         def predict(self, X):
-            K_test = gk.transform(X)
+            K_test = self.gk.transform(X)
             return self.model.predict(K_test)
         
         def get_params(self, deep=True):
@@ -58,10 +76,26 @@ def main():
                 setattr(self, key, value)
             return self
 
+    # 4. Run Grid Search
+    # Use StratifiedGroupKFold to prevent leakage during CV
+    print("Running GridSearchCV...")
+    param_grid = {
+        "C": [0.01, 0.1, 1, 10],
+        "wl_iterations": [2] 
+    }
+
+    cv_strategy = StratifiedGroupKFold(n_splits=3)
+    
     grid = GridSearchCV(
-        KWrapper(), param_grid, cv=3, scoring="accuracy", n_jobs=-1
+        KWrapper(), 
+        param_grid, 
+        cv=cv_strategy, 
+        scoring="accuracy", 
+        n_jobs=-1
     )
-    grid.fit(X_train, y_train)
+    
+    # Pass groups to .fit() for the CV splitter
+    grid.fit(X_train, y_train, groups=groups_train)
 
     print("Best params:", grid.best_params_)
     print(f"Best CV score: {grid.best_score_:.4f}\n")
@@ -70,7 +104,7 @@ def main():
     for mean, std, params in zip(grid.cv_results_["mean_test_score"],
                                  grid.cv_results_["std_test_score"],
                                  grid.cv_results_["params"]):
-        print(f"C={params['C']}: mean accuracy={mean:.4f} ± {std:.4f}")
+        print(f"Params={params}: mean accuracy={mean:.4f} ± {std:.4f}")
 
 if __name__ == "__main__":
     main()

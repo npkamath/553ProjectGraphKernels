@@ -6,7 +6,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 from src.config import RAW_DATA_PATH
-from src.processing import process_graphs
 from src.trainer import train_pipeline
 
 def main():
@@ -15,15 +14,14 @@ def main():
     
     Steps:
     1. Loads raw .pkl data from data/raw/
-    2. Runs processing to generate discretized, labeled subgraphs.
-    3. Runs the training pipeline with leakage-proof group splitting.
+    2. Runs the training pipeline (which now handles processing and leakage-proof splitting internally).
     """
     print("========================================")
     print("   CRYSTAL STRUCTURE CLASSIFICATION     ")
     print("========================================")
 
     # 1. Load Data
-    print(f"\n[1/3] Loading raw data from: {RAW_DATA_PATH}")
+    print(f"\n[1/2] Loading raw data from: {RAW_DATA_PATH}")
     try:
         with open(RAW_DATA_PATH, 'rb') as f:
             data = pickle.load(f)
@@ -32,16 +30,17 @@ def main():
         print(f"ERROR: Could not find file at {RAW_DATA_PATH}")
         return
 
-    # 2. Process Data
-    print("\n[2/3] Processing graphs...")
-    # Now returns groups as well
-    subgraphs, labels, groups = process_graphs(data['graphs'], data['metadata'])
-    print(f"      Generated {len(subgraphs)} labeled subgraphs.")
-
-    # 3. Train Model
-    print("\n[3/3] Training and Evaluating Model...")
-    # Pass groups to trainer to ensure proper splitting
-    train_pipeline(subgraphs, labels, groups)
+    # 2. Train Model
+    # Note: We no longer call 'process_graphs' here. 
+    # We pass the raw data to train_pipeline so it can split 
+    # the data BEFORE processing to prevent data leakage.
+    print("\n[2/2] Training and Evaluating Model...")
+    
+    metrics = train_pipeline(data['graphs'], data['metadata'])
+    
+    # Optional: Print final summary from the returned metrics dict
+    print("\nPipeline Complete.")
+    print(f"Final Test Accuracy: {metrics['Accuracy']:.4f}")
 
 if __name__ == "__main__":
     main()
