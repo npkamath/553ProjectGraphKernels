@@ -4,7 +4,7 @@ import networkx as nx
 from grakel import Graph
 from sklearn.preprocessing import KBinsDiscretizer
 from .config import (NEIGHBOR_RADIUS, NOISE_THRESHOLD, N_BINS, 
-                     SAMPLES_PER_GRAPH, RANDOM_SEED)
+                     SAMPLES_PER_GRAPH, RANDOM_SEED, KERNEL_TYPE)
 
 def get_node_feature_vector(node_attributes):
     """
@@ -102,7 +102,13 @@ def process_graphs(graphs, metadata, n_bins=N_BINS, radius=NEIGHBOR_RADIUS):
                 gk_labels[n_id] = label_str
             
             gk_edges = list(ego.edges())
-            final_subgraphs.append(Graph(gk_edges, node_labels=gk_labels))
+
+            if (KERNEL_TYPE == "SM") or (KERNEL_TYPE == "NSPD"):
+                edge_labels = { (i, j): 1 for i, j in gk_edges }
+                final_subgraphs.append(Graph(gk_edges, node_labels=gk_labels, edge_labels=edge_labels))
+            else:
+                final_subgraphs.append(Graph(gk_edges, node_labels=gk_labels))
+                
             final_labels.append(label)
             # Store the index of the parent graph (0, 1, 2...) so we can group split later
             final_groups.append(graph_idx)

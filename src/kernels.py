@@ -1,4 +1,4 @@
-from grakel.kernels import WeisfeilerLehman, WeisfeilerLehmanOptimalAssignment
+from grakel.kernels import WeisfeilerLehman, WeisfeilerLehmanOptimalAssignment, NeighborhoodSubgraphPairwiseDistance, SubgraphMatching
 from .config import WL_ITERATIONS, N_JOBS
 
 def get_kernel(kernel_name, n_iter=WL_ITERATIONS):
@@ -35,6 +35,14 @@ def get_kernel(kernel_name, n_iter=WL_ITERATIONS):
             n_iter=iterations, 
             normalize=True, 
             n_jobs=N_JOBS
+        )
+    elif kernel_name == "NSPD":
+        return NeighborhoodSubgraphPairwiseDistance(
+            normalize=True
+        )
+    elif kernel_name == "SM":
+        return SubgraphMatching(
+            normalize=True
         )
     else:
         raise ValueError(f"Unknown kernel: {kernel_name}. Valid options are 'WL-OA', 'WL'.")
